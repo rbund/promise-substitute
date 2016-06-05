@@ -108,8 +108,8 @@
 									iterables.forEach(
 										function (e) { 
 											CPromiseEx.resolve(e).then( 
-												function(v) { c--; if (c) { a(v); throw("");} }, 
-												function(v) { c--; if (c) { b(v); throw("");} }
+												function(v) { if (c) { c--;  a(v); throw("");} },
+												function(v) { if (c) { c--;  b(v); throw("");} }
 											)}
 									);
 								} catch(ex) { }
