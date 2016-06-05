@@ -102,7 +102,7 @@
 			{
 				return(new CPromiseEx(function(a,b)
 							{
-								var c = 1, len = iterables.length-1;
+								var c = 1;
 								try
 								{
 									iterables.forEach(
