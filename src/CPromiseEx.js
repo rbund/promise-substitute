@@ -1,96 +1,118 @@
-	function CPromiseEx(fex)
+	function CPromise(fn)
 	{
-		"use strict;"
-		
-		var self = this;
-		var _onresolve, _onreject, _onresolve2, _onreject2;
-		var _args = [];
-		
-		var exec = function(f, args, res, rej, saveargs) 
-		{ 
-			if (saveargs) _args = args;
-			if (f) 
-			{ 
-				try 
-				{ 
-					f.apply(self, args); 
-				} 
-				catch(e) 
-				{ 
-					if (rej) rej.call(self, e); 
-					return; 
-				} 
-				if (res) res.apply(self, args); 
-			}
-		};
-		
-		var reject = function()
-		{
-			self.state = "rejected";
-			exec(_onreject, Array.prototype.slice.call(arguments,0), _onresolve2, _onreject2, true);
-		};
-
-		var resolve = function()
-		{
-			self.state="fulfilled";
-			exec(_onresolve, Array.prototype.slice.call(arguments,0), _onresolve2, _onreject2, true);
-		};
-		
-		this.then = function(onresolve, onreject)
-		{
-			var r = new CPromiseEx(function(a,b) { _onresolve2 = a; _onreject2 = b; });
-			
-			if ( onresolve && typeof onresolve !== "function")
-				throw("onresolve must be either a valid function or undefined");
-			if ( onreject && typeof onreject !== "function")
-				throw("onreject must be either a valid function or undefined");
-
-			_onresolve = onresolve; _onreject = onreject;
-			if (self.state !== "pending")
-			{
-				if (self.state === "rejected") reject.apply(this,_args); else resolve.apply(this,_args);
-			}
-			return(r);
-		}
-		
-		this.catch = function(onreject)
-		{
-			return(self.then(undefined, onreject));
-		};
-
-		if (typeof fex !== "function")
-			throw("The parameter provided must be a valid function");
-		
+		if (typeof fn !== "function") throw(new(TypeError("Illegal argument")));
 		this.state = "pending";
-		exec(fex, [resolve, reject], undefined, reject);
+		this.__onresolve = [];
+		try
+		{
+			fn(CPromise.resolve.bind(this), CPromise.reject.bind(this));
+		}
+		catch(ex)
+		{
+			CPromise.reject.call(this, ex.message);
+		}
 	}
 	
 	(function()
 	{
-		this.resolve = function(value)
+		this.then = function(fn_a, fn_b)
 		{
-			if (value && typeof value.then === "function")
-				return(new CPromiseEx(value.then));
-			else return(new CPromiseEx(function(a,b) { a(value); }));
+			var self = this;
+			var p = new CPromise(function() {if (self.state === "fulfilled") fn_a(self.value); else if (self.state === "rejected") fn_b(self.reason); } );
+			if (this.state === "pending")
+			{
+				p._then = []; p._then[true] = fn_a; p._then[false] = fn_b;
+				CPromise.resolve.call(p, this);
+			}
+			return(p);
+		};
+		
+		this.catch = function(fn_b) { return( this.then(undefined, fn_b) ); };
+		
+	}).call(CPromise.prototype);
+	
+	(function()
+	{
+		var self = this;
+		
+		function statechange(state, res)
+		{
+			if (this.state === "pending")
+			{
+				if (this._then)
+				{
+					var f = this._then[state];
+					if (f)
+						try { f(res); }
+						catch(ex) { state = false; res = ex.message; }
+				}
+				if (state) { this.state = "fulfilled"; this.value = res; }
+				else { this.state = "rejected"; this.reason = res;}
+				this.__onresolve.forEach( function(e) { self.resolve.call(e, this); }, this );
+			}
+		}
+		
+		this.resolve = function(resolveable)
+		{
+			if (this instanceof CPromise)
+			{
+				if (resolveable instanceof CPromise)
+				{
+					if (this === resolveable) throw(new TypeError("a CPromise can't resolve itself"));
+					if (this.state === "pending")
+					{
+						if (resolveable.state !== "pending")
+						{
+							statechange.call(this, resolveable.state === "fulfilled", resolveable.state === "fulfilled" ? resolveable.value : resolveable.reason);
+						} else resolveable.__onresolve.push(this); // install transition listener
+					}
+				}
+				else
+				{
+					var t = typeof resolveable;					
+					if ((t === "object" || t === "function") && resolveable.then)
+					{					
+						if (typeof t.then === "function")
+						{
+							try { resolveable.then.call(resolveable, self.resolve.bind(this), self.reject.bind(this)) ;}
+							catch (ex) { self.reject.call(this, ex.message); }
+						}
+						else statechange.call(this, true, resolveable.then);
+					}
+					else
+					{
+						statechange.call(this, true, resolveable);
+					}
+				}
+			}
+			else return(new CPromise( function(a) { a(resolveable) }));
+		};
+		
+		this.reject = function(reason)
+		{
+			if (this instanceof CPromise) statechange.call(this, false, reason);
+			else return(new CPromise(function(a,b) { b(reason); }));
 		};
 		
 		this.all = function(iterables)
 		{
 			if (iterables && typeof iterables.forEach === "function")
 			{
-				return(new CPromiseEx(function(a,b)
+				return(new CPromise(function(a,b)
 							{
-								var c = 0, len = iterables.length;
-								try
-								{
-									iterables.forEach(
-										function (e) { 
-											CPromiseEx.resolve(e).then( 
-												function(v) { c++; if (c === len) a(v); }, 
-												function(v) { b(v); throw(""); }
-											)}
-									);
-								} catch(ex) { }
+								var c = 0, len = iterables.length, res = [];
+								if (len > 0)
+									try
+									{
+										iterables.forEach(
+											function (e) { 
+												CPromise.resolve(e).then(
+													function(v) { res.push(v); c++; if (c === len) a(res); }, 
+													function(v) { res = [v]; b(v); throw(""); }
+												)}
+										);
+									} catch(ex) { }
+								else a(res);
 							}
 				));
 			}
@@ -100,15 +122,15 @@
 		{
 			if (iterables && typeof iterables.forEach === "function")
 			{
-				return(new CPromiseEx(function(a,b)
+				return(new CPromise(function(a,b)
 							{
 								var c = 1;
 								try
 								{
 									iterables.forEach(
 										function (e) { 
-											CPromiseEx.resolve(e).then( 
-												function(v) { if (c) { c--;  a(v); throw("");} },
+											CPromise.resolve(e).then( 
+												function(v) { if (c) { c--;  a(v); throw("");} }, 
 												function(v) { if (c) { c--;  b(v); throw("");} }
 											)}
 									);
@@ -116,6 +138,5 @@
 							}
 				));
 			}
-		};
-	
-	}).call(CPromiseEx);
+		};		
+	}).call(CPromise);
